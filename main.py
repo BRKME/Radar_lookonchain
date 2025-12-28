@@ -42,20 +42,16 @@ def save_last_tweet_id(tweet_id):
 
 def get_lookonchain_tweets(since_id=None):
     try:
-        user = client.get_user(username='lookonchain')
-        user_id = user.data.id
-        
-        params = {
-            'max_results': 20,
-            'tweet_fields': ['created_at', 'attachments', 'referenced_tweets'],
-            'media_fields': ['url', 'preview_image_url'],
-            'expansions': ['attachments.media_keys']
-        }
-        
-        if since_id:
-            params['since_id'] = since_id
-        
-        response = client.get_users_tweets(user_id, **params)
+        # Alternative: use your own timeline with mentions/likes from lookonchain
+        # This doesn't require elevated access
+        response = client.search_recent_tweets(
+            query='from:lookonchain',
+            max_results=20,
+            tweet_fields=['created_at', 'attachments', 'referenced_tweets'],
+            media_fields=['url', 'preview_image_url'],
+            expansions=['attachments.media_keys'],
+            since_id=since_id
+        )
         
         tweets_data = []
         if response.data:
