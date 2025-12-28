@@ -25,7 +25,12 @@ for var_name, var_value in required_vars.items():
 
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-RSS_FEED_URL = "https://nitter.poast.org/lookonchain/rss"
+NITTER_INSTANCES = [
+    "https://nitter.privacydev.net/lookonchain/rss",
+    "https://nitter.net/lookonchain/rss",
+    "https://nitter.1d4.us/lookonchain/rss",
+    "https://nitter.unixfox.eu/lookonchain/rss",
+]
 
 def get_last_tweet_id():
     try:
@@ -40,41 +45,54 @@ def save_last_tweet_id(tweet_id):
         f.write(tweet_id)
 
 def get_lookonchain_tweets(since_id=None):
-    try:
-        print(f"Fetching RSS from: {RSS_FEED_URL}")
-        response = requests.get(RSS_FEED_URL, timeout=30)
-        print(f"RSS response status: {response.status_code}")
-        
-        feed = feedparser.parse(response.content)
-        print(f"RSS feed entries count: {len(feed.entries)}")
-        
-        tweets_data = []
-        for entry in feed.entries[:20]:
-            tweet_id = entry.link.split('/')[-1].split('#')[0]
+    for rss_url in NITTER_INSTANCES:
+        try:
+            print(f"Trying RSS from: {rss_url}")
+            response = requests.get(rss_url, timeout=30)
+            print(f"RSS response status: {response.status_code}")
             
-            if since_id and tweet_id <= since_id:
-                print(f"Skipping tweet {tweet_id} (older than {since_id})")
+            if response.status_code != 200:
+                print(f"Failed, trying next instance...")
                 continue
             
-            tweet_info = {
-                'id': tweet_id,
-                'text': entry.title,
-                'link': entry.link,
-                'media_urls': []
-            }
+            feed = feedparser.parse(response.content)
+            print(f"RSS feed entries count: {len(feed.entries)}")
             
-            if hasattr(entry, 'media_content'):
-                for media in entry.media_content:
-                    if 'url' in media:
-                        tweet_info['media_urls'].append(media['url'])
+            if len(feed.entries) == 0:
+                print(f"No entries, trying next instance...")
+                continue
             
-            tweets_data.append(tweet_info)
-        
-        print(f"Collected {len(tweets_data)} new tweets")
-        return tweets_data
-    except Exception as e:
-        print(f"RSS feed error: {e}")
-        return []
+            tweets_data = []
+            for entry in feed.entries[:20]:
+                tweet_id = entry.link.split('/')[-1].split('#')[0]
+                
+                if since_id and tweet_id <= since_id:
+                    print(f"Skipping tweet {tweet_id} (older than {since_id})")
+                    continue
+                
+                tweet_info = {
+                    'id': tweet_id,
+                    'text': entry.title,
+                    'link': entry.link,
+                    'media_urls': []
+                }
+                
+                if hasattr(entry, 'media_content'):
+                    for media in entry.media_content:
+                        if 'url' in media:
+                            tweet_info['media_urls'].append(media['url'])
+                
+                tweets_data.append(tweet_info)
+            
+            print(f"Successfully collected {len(tweets_data)} new tweets from {rss_url}")
+            return tweets_data
+            
+        except Exception as e:
+            print(f"Error with {rss_url}: {e}")
+            continue
+    
+    print("All Nitter instances failed")
+    return []
 
 def process_with_ai(text):
     for attempt in range(3):
