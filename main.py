@@ -41,14 +41,19 @@ def save_last_tweet_id(tweet_id):
 
 def get_lookonchain_tweets(since_id=None):
     try:
+        print(f"Fetching RSS from: {RSS_FEED_URL}")
         response = requests.get(RSS_FEED_URL, timeout=30)
+        print(f"RSS response status: {response.status_code}")
+        
         feed = feedparser.parse(response.content)
+        print(f"RSS feed entries count: {len(feed.entries)}")
         
         tweets_data = []
         for entry in feed.entries[:20]:
             tweet_id = entry.link.split('/')[-1].split('#')[0]
             
             if since_id and tweet_id <= since_id:
+                print(f"Skipping tweet {tweet_id} (older than {since_id})")
                 continue
             
             tweet_info = {
@@ -65,6 +70,7 @@ def get_lookonchain_tweets(since_id=None):
             
             tweets_data.append(tweet_info)
         
+        print(f"Collected {len(tweets_data)} new tweets")
         return tweets_data
     except Exception as e:
         print(f"RSS feed error: {e}")
@@ -133,7 +139,14 @@ def send_to_telegram(text, media_urls=None):
 
 def main():
     last_id = get_last_tweet_id()
+    print(f"Last tweet ID from file: {last_id}")
+    
     tweets = get_lookonchain_tweets(since_id=last_id)
+    print(f"Fetched {len(tweets)} tweets from RSS")
+    
+    if tweets:
+        for i, tweet in enumerate(tweets[:3]):
+            print(f"Tweet {i+1} ID: {tweet['id']}, Text preview: {tweet['text'][:50]}...")
     
     if not tweets:
         print("No new tweets")
