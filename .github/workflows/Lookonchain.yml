@@ -2,11 +2,15 @@ name: Lookonchain Web Scraper
 
 on:
   schedule:
-    - cron: '0 */1 * * *'  # Every 2 hours
+    - cron: '*/30 * * * *'  # Every 30 minutes (not 2 hours!)
   workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: lookonchain-scraper
+  cancel-in-progress: false  # Don't cancel, wait for previous to finish
 
 jobs:
   scrape:
@@ -39,6 +43,9 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Pull latest changes first to avoid conflicts
+          git pull --rebase
           
           # Add state files
           git add -f last_feed_id.txt processed_hashes.txt
