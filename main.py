@@ -21,13 +21,10 @@ BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TARGET_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', TARGET_CHAT_ID)
 
-# Lookonchain website
-LOOKONCHAIN_FEEDS_URL = "https://www.lookonchain.com/feeds"
-
 # Settings
-MAX_FEEDS_PER_RUN = 5
+MAX_FEEDS_PER_RUN = 3  # Reduced for 30-min intervals
 OPENAI_TIMEOUT = 15
-POST_DELAY = 3
+POST_DELAY = 2  # Reduced delay between posts
 
 # Validate environment variables
 required_vars = {
@@ -75,81 +72,87 @@ def get_content_hash(text):
     normalized = ' '.join(text.lower().split())
     return hashlib.md5(normalized.encode()).hexdigest()
 
-def fetch_lookonchain_feeds():
-    """Fetch and parse Lookonchain feeds page"""
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
+def fetch_new_feeds(last_id):
+    """Find new feeds by trying incremental IDs"""
+    new_feeds = []
+    current_id = last_id + 1
+    max_new_feeds = 5  # Reduced for 30-min intervals
+    
+    while len(new_feeds) < max_new_feeds:
+        feed_url = f"https://www.lookonchain.com/feeds/{current_id}"
         
-        response = requests.get(LOOKONCHAIN_FEEDS_URL, headers=headers, timeout=30)
-        response.raise_for_status()
-        
-        # Check if response is empty
-        if not response.text or len(response.text) < 100:
-            logger.warning("Empty or too short response from website")
-            return []
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Find ALL feed links (not just hot feeds)
-        feed_links = soup.find_all('a', href=True)
-        
-        feeds = []
-        seen_ids = set()
-        
-        for link in feed_links:
-            href = link.get('href', '')
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
             
-            # Check if it's a feed link
-            if href.startswith('/feeds/') and href.count('/') == 2:
-                try:
-                    feed_id = href.split('/')[-1]
-                    
-                    # Skip if not a number or already seen
-                    if not feed_id.isdigit() or feed_id in seen_ids:
-                        continue
-                    
-                    seen_ids.add(feed_id)
-                    
-                    # Get title
-                    title = html.unescape(link.get_text(strip=True))
-                    
-                    # Skip if title is empty or too short
-                    if not title or len(title) < 10:
-                        continue
-                    
-                    # Get date if available
-                    date_elem = link.find_next_sibling() or link.find_next()
-                    date = ""
-                    if date_elem and date_elem.name == 'time':
-                        date = date_elem.get_text(strip=True)
-                    
-                    feeds.append({
-                        'id': feed_id,
-                        'title': title,
-                        'date': date,
-                        'url': f"https://www.lookonchain.com/feeds/{feed_id}"
-                    })
-                    
-                except (ValueError, IndexError, AttributeError):
-                    continue
+            response = requests.get(feed_url, headers=headers, timeout=30, allow_redirects=False)
+            
+            # If 404 - no more feeds, stop immediately
+            if response.status_code == 404:
+                logger.info(f"Feed {current_id}: 404 - reached end")
+                break
+            
+            if response.status_code != 200:
+                logger.warning(f"Feed {current_id}: status {response.status_code}, stopping")
+                break
+            
+            # Parse the page
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Find title
+            title_elem = soup.find('h1')
+            if not title_elem:
+                logger.warning(f"Feed {current_id}: no title found, skipping")
+                current_id += 1
+                continue
+            
+            title = html.unescape(title_elem.get_text(strip=True))
+            
+            # Find time
+            time_elem = soup.find('time') or soup.find(string=lambda text: text and 'ago' in text)
+            time_text = time_elem if isinstance(time_elem, str) else (time_elem.get_text(strip=True) if time_elem else "")
+            
+            # Find main content (paragraphs after title)
+            content_paragraphs = []
+            for p in soup.find_all('p'):
+                text = p.get_text(strip=True)
+                if text and len(text) > 20:  # Skip very short paragraphs
+                    content_paragraphs.append(html.unescape(text))
+            
+            full_content = '\n\n'.join(content_paragraphs)
+            
+            if not full_content or len(full_content) < 50:
+                logger.warning(f"Feed {current_id}: content too short, skipping")
+                current_id += 1
+                continue
+            
+            # Success!
+            new_feeds.append({
+                'id': current_id,
+                'title': title,
+                'time': time_text,
+                'content': full_content,
+                'url': feed_url
+            })
+            
+            logger.info(f"✅ Feed {current_id}: {title[:60]}...")
+            
+        except Exception as e:
+            logger.error(f"Feed {current_id}: error - {e}, stopping")
+            break
         
-        # Sort by ID descending (newest first)
-        feeds.sort(key=lambda x: int(x['id']), reverse=True)
-        
-        logger.info(f"Found {len(feeds)} feeds on page")
-        return feeds
-        
-    except Exception as e:
-        logger.error(f"Error fetching feeds: {e}")
-        return []
+        current_id += 1
+        time.sleep(0.5)  # Small delay between requests
+    
+    logger.info(f"Found {len(new_feeds)} new feeds")
+    return new_feeds
 
-def process_with_ai(text):
-    """Process text through OpenAI"""
-    if len(text) > 2000:
-        text = text[:2000] + "..."
-        logger.warning("Text truncated to 2000 chars")
+def process_with_ai(content):
+    """Process content through OpenAI - analyze for Telegram format"""
+    if len(content) > 3000:
+        content = content[:3000] + "..."
+        logger.warning("Content truncated to 3000 chars")
     
     for attempt in range(3):
         try:
@@ -158,26 +161,32 @@ def process_with_ai(text):
                 messages=[
                     {
                         "role": "system",
-                        "content": """Ты криптоаналитик. Создай ПОЛНОСТЬЮ ОРИГИНАЛЬНЫЙ анализ.
+                        "content": """You are a crypto analyst. Create a BRIEF Telegram post in English.
 
-КРИТИЧЕСКИЕ ПРАВИЛА:
-1. НИКОГДА не используй более 5 слов подряд из исходного текста
-2. Полностью ПЕРЕПИШИ информацию своими словами
-3. Анализ должен быть на 80%+ отличен от оригинала
-4. Сохрани только: точные цифры, тикеры, суммы в USD
-5. ВСЁ ОСТАЛЬНОЕ - твои формулировки
+CRITICAL RULES:
+1. Maximum 280 characters (Twitter-style brevity)
+2. 2-3 sentences ONLY
+3. Include key numbers, tickers, amounts
+4. Use professional crypto terminology
+5. NO hashtags, NO emojis
+6. Completely rewrite - NEVER copy exact phrases from source
 
-Формат: 2-3 предложения МАКСИМУМ
-Стиль: Краткий, информативный, профессиональный
+Format: 
+- First sentence: Main event
+- Second sentence: Key details (numbers/tickers)
+- Optional third: Context/impact
 
-Если не можешь создать оригинальный текст - ответь "SKIP"."""
+Example good output:
+"Arthur Hayes, Tom Lee, and Michael Saylor's 2025 Bitcoin predictions fell short. Hayes forecasted $200K+, Lee predicted $250K, while Saylor expected $150K by year-end. All targets remain unmet as 2025 concludes."
+
+If you cannot create original brief text - respond "SKIP"."""
                     },
                     {
                         "role": "user",
-                        "content": f"Новость: {text}\n\nТвой анализ:"
+                        "content": f"News content:\n\n{content}\n\nYour brief Telegram post (max 280 chars):"
                     }
                 ],
-                max_tokens=300,
+                max_tokens=150,
                 temperature=0.7,
                 timeout=OPENAI_TIMEOUT
             )
@@ -188,6 +197,12 @@ def process_with_ai(text):
                 logger.warning("AI refused or result too short")
                 return None
             
+            # Ensure it's not too long for Telegram
+            if len(result) > 400:
+                logger.warning(f"AI output too long ({len(result)} chars), truncating")
+                result = result[:397] + "..."
+            
+            logger.info(f"AI output length: {len(result)} chars")
             return result
             
         except Exception as e:
@@ -242,69 +257,56 @@ def notify_error(error_msg):
 
 def main():
     """Main logic"""
-    logger.info("Starting Lookonchain Web Scraper Bot...")
+    logger.info("Starting Lookonchain Feed Scraper Bot...")
     
     try:
-        # Fetch feeds
-        feeds = fetch_lookonchain_feeds()
-        
-        if not feeds:
-            logger.warning("No feeds found")
-            return
-        
         # Get last processed ID
-        last_id = get_last_processed_id()
-        last_id_int = int(last_id) if last_id else 0
-        logger.info(f"Last processed ID: {last_id}")
-        
-        # Get processed hashes
-        processed_hashes = get_processed_hashes()
-        logger.info(f"Loaded {len(processed_hashes)} processed hashes")
-        
-        # Filter new feeds
-        new_feeds = []
-        for feed in feeds:
-            feed_id_int = int(feed['id'])
-            if feed_id_int <= last_id_int:
-                continue  # Skip old feeds, don't break (might have unsorted IDs)
-            new_feeds.append(feed)
-        
-        new_feeds.reverse()  # Process oldest first
-        
-        logger.info(f"Found {len(new_feeds)} new feeds")
-        
-        if not new_feeds:
-            logger.info("No new feeds to process")
-            return
+        last_id_str = get_last_processed_id()
+        last_id_int = int(last_id_str) if last_id_str else 0
+        logger.info(f"Last processed ID: {last_id_int}")
         
         # FIRST RUN PROTECTION
-        if last_id_int == 0 and new_feeds:
-            latest_id = new_feeds[-1]['id']  # Last after reverse = newest
-            save_last_processed_id(latest_id)
-            logger.warning(f"First run: saved latest ID ({latest_id}), no publishing")
+        if last_id_int == 0:
+            # Try to find a recent feed to start from
+            test_id = 42194  # Recent known ID
+            logger.info(f"First run: testing with ID {test_id}")
+            save_last_processed_id(str(test_id))
+            logger.warning(f"First run: saved starting ID ({test_id}), no publishing")
             return
+        
+        # Find new feeds
+        new_feeds = fetch_new_feeds(last_id_int)
+        
+        if not new_feeds:
+            logger.info("No new feeds found")
+            return
+        
+        # Get processed hashes for deduplication
+        processed_hashes = get_processed_hashes()
+        logger.info(f"Loaded {len(processed_hashes)} processed hashes")
         
         published_count = 0
         max_processed_id_int = last_id_int
         
         for i, feed in enumerate(new_feeds[:MAX_FEEDS_PER_RUN]):
             logger.info(f"\n--- Processing feed {feed['id']} ---")
-            logger.info(f"Title: {feed['title'][:100]}...")
-            logger.info(f"Date: {feed['date']}")
+            logger.info(f"Title: {feed['title'][:80]}...")
+            logger.info(f"Time: {feed['time']}")
+            logger.info(f"Content length: {len(feed['content'])} chars")
             
-            # Deduplication
+            # Deduplication by title
             content_hash = get_content_hash(feed['title'])
             if content_hash in processed_hashes:
                 logger.info("Duplicate content detected, skipping")
-                max_processed_id_int = max(max_processed_id_int, int(feed['id']))
+                max_processed_id_int = max(max_processed_id_int, feed['id'])
                 continue
             
-            # Process with AI
-            ai_analysis = process_with_ai(feed['title'])
+            # Process FULL content with AI
+            ai_analysis = process_with_ai(feed['content'])
             
             if not ai_analysis:
                 logger.warning("AI processing failed")
-                max_processed_id_int = max(max_processed_id_int, int(feed['id']))
+                max_processed_id_int = max(max_processed_id_int, feed['id'])
                 continue
             
             logger.info(f"AI analysis: {ai_analysis[:100]}...")
@@ -319,7 +321,7 @@ def main():
                 save_processed_hash(content_hash)
                 processed_hashes.add(content_hash)
                 
-                max_processed_id_int = max(max_processed_id_int, int(feed['id']))
+                max_processed_id_int = max(max_processed_id_int, feed['id'])
             else:
                 logger.error("Failed to publish")
                 break
