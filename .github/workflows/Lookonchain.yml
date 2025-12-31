@@ -2,7 +2,7 @@ name: Lookonchain Web Scraper
 
 on:
   schedule:
-    - cron: '*/30 * * * *'  # Every 30 minutes (not 2 hours!)
+    - cron: '*/30 * * * *'  # Every 30 minutes
   workflow_dispatch:
 
 permissions:
@@ -45,15 +45,25 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
           # Pull latest changes first to avoid conflicts
-          git pull --rebase
+          if ! git pull --rebase; then
+            echo "⚠️ Git pull failed, attempting to continue anyway"
+            git rebase --abort || true
+          fi
           
           # Add state files
           git add -f last_feed_id.txt processed_hashes.txt
           
-          # Commit and push
+          # Commit and push with retry
           if ! git diff --cached --quiet; then
             git commit -m "Update state [skip ci]"
-            git push
+            
+            # Try to push, retry once if failed
+            if ! git push; then
+              echo "⚠️ First push failed, pulling and retrying..."
+              git pull --rebase || true
+              git push || echo "❌ Push failed after retry"
+            fi
+            
             echo "✅ State saved"
           else
             echo "No changes"
