@@ -108,50 +108,30 @@ def fetch_new_feeds(last_id):
             time_elem = soup.find('time') or soup.find(string=lambda text: text and 'ago' in text)
             time_text = time_elem if isinstance(time_elem, str) else (time_elem.get_text(strip=True) if time_elem else "")
             
-            # Find main content (paragraphs after title)
-            # Exclude common boilerplate phrases that might cause confusion
-            exclude_phrases = [
-                'related news',
-                'similar articles',
-                'you might also like',
-                'recommended for you',
-                'trending now',
-                'popular articles'
-            ]
-            
-            # Detect Related News by linking words (they introduce unrelated context)
-            related_news_indicators = [
-                'meanwhile,',
-                'additionally,',
-                'concurrently,',
-                'however,',
-                'notably,',
-                'in other news,',
-                'separately,',
-                'furthermore,',
-                'moreover,'
-            ]
-            
+            # Find main content (paragraphs after title, before "Relevant content" section)
             content_paragraphs = []
-            for p in soup.find_all('p'):
-                text = p.get_text(strip=True)
-                if text and len(text) > 20:  # Skip very short paragraphs
-                    # Skip if contains exclude phrases
-                    text_lower = text.lower()
-                    if any(phrase in text_lower for phrase in exclude_phrases):
-                        logger.info(f"Skipping boilerplate paragraph: {text[:50]}...")
-                        continue
-                    
-                    # Skip paragraphs starting with linking words (likely Related News)
-                    if any(text_lower.startswith(indicator) for indicator in related_news_indicators):
-                        logger.info(f"Skipping Related News paragraph: {text[:50]}...")
-                        break  # Stop processing - rest is Related News
-                    
-                    content_paragraphs.append(html.unescape(text))
+            found_relevant_content = False
             
-            # Take first 5 paragraphs max (more aggressive filtering)
-            content_paragraphs = content_paragraphs[:5]
+            for element in soup.find_all(['p', 'h2', 'h3', 'h4']):
+                # Check if we hit "Relevant content" section
+                element_text = element.get_text(strip=True)
+                if element.name in ['h2', 'h3', 'h4']:
+                    if 'relevant content' in element_text.lower():
+                        logger.info("Found 'Relevant content' section, stopping parse")
+                        found_relevant_content = True
+                        break
+                
+                # Only process paragraphs for content
+                if element.name == 'p':
+                    text = element_text
+                    if text and len(text) > 20:  # Skip very short paragraphs
+                        content_paragraphs.append(html.unescape(text))
+            
+            # Take first 8 paragraphs max (increased from 5 since we have explicit marker)
+            content_paragraphs = content_paragraphs[:8]
             full_content = '\n\n'.join(content_paragraphs)
+            
+            logger.info(f"Parsed {len(content_paragraphs)} paragraphs, found_relevant_content={found_relevant_content}")
             
             if not full_content or len(full_content) < 50:
                 logger.warning(f"Feed {current_id}: content too short, will retry next run")
