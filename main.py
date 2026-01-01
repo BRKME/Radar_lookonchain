@@ -108,30 +108,43 @@ def fetch_new_feeds(last_id):
             time_elem = soup.find('time') or soup.find(string=lambda text: text and 'ago' in text)
             time_text = time_elem if isinstance(time_elem, str) else (time_elem.get_text(strip=True) if time_elem else "")
             
-            # Find main content (paragraphs after title, before "Relevant content" section)
+            # Robust parser: collect ALL paragraphs, then filter by position relative to title
+            all_paragraphs = []
+            for p in soup.find_all('p'):
+                text = p.get_text(strip=True)
+                if text and len(text) > 30:  # Skip very short paragraphs
+                    all_paragraphs.append(html.unescape(text))
+            
+            if not all_paragraphs:
+                logger.warning(f"Feed {current_id}: no paragraphs found, will retry")
+                break
+            
+            # Find where main content starts (skip paragraphs that might be before title)
+            # and stop at "Relevant content" markers
             content_paragraphs = []
-            found_relevant_content = False
+            stop_markers = ['relevant content', 'source:', 'add to favorites', 'download image', 'share x']
             
-            for element in soup.find_all(['p', 'h2', 'h3', 'h4']):
-                # Check if we hit "Relevant content" section
-                element_text = element.get_text(strip=True)
-                if element.name in ['h2', 'h3', 'h4']:
-                    if 'relevant content' in element_text.lower():
-                        logger.info("Found 'Relevant content' section, stopping parse")
-                        found_relevant_content = True
-                        break
+            for para in all_paragraphs:
+                para_lower = para.lower()
                 
-                # Only process paragraphs for content
-                if element.name == 'p':
-                    text = element_text
-                    if text and len(text) > 20:  # Skip very short paragraphs
-                        content_paragraphs.append(html.unescape(text))
+                # Stop if we hit a marker
+                if any(marker in para_lower for marker in stop_markers):
+                    logger.info(f"Found stop marker in paragraph: {para[:50]}...")
+                    break
+                
+                # Collect paragraph
+                content_paragraphs.append(para)
+                
+                # Stop after 5 paragraphs (enough for main article)
+                if len(content_paragraphs) >= 5:
+                    break
             
-            # Take first 8 paragraphs max (increased from 5 since we have explicit marker)
-            content_paragraphs = content_paragraphs[:8]
+            if not content_paragraphs:
+                logger.warning(f"Feed {current_id}: no content paragraphs found, will retry")
+                break
+            
             full_content = '\n\n'.join(content_paragraphs)
-            
-            logger.info(f"Parsed {len(content_paragraphs)} paragraphs, found_relevant_content={found_relevant_content}")
+            logger.info(f"Collected {len(content_paragraphs)} paragraphs ({len(full_content)} chars)")
             
             if not full_content or len(full_content) < 50:
                 logger.warning(f"Feed {current_id}: content too short, will retry next run")
@@ -160,9 +173,10 @@ def fetch_new_feeds(last_id):
 
 def process_with_ai(content, feed_title):
     """Process content through OpenAI - analyze for Telegram format with sentiment"""
-    if len(content) > 3000:
-        content = content[:3000] + "..."
-        logger.warning("Content truncated to 3000 chars")
+    # Truncate if too long (but we should have clean content now)
+    if len(content) > 2000:
+        content = content[:2000]
+        logger.warning(f"Content truncated to 2000 chars")
     
     for attempt in range(3):
         try:
@@ -174,37 +188,26 @@ def process_with_ai(content, feed_title):
                         "content": """You are a crypto analyst. Create a BRIEF Telegram post with sentiment analysis.
 
 CRITICAL RULES:
-1. Maximum 280 characters for the main text
-2. 2-3 sentences ONLY
-3. Include key numbers, tickers, amounts
-4. Use professional crypto terminology
-5. NO hashtags, NO emojis
-6. Completely rewrite - NEVER copy exact phrases from source
-7. FOCUS ON THE TITLE - your summary must match the article title!
+1. Write ONLY about the article TITLE topic
+2. Maximum 280 characters
+3. 2-3 sentences with key numbers/tickers
+4. IGNORE any unrelated content (if Bitcoin/Ethereum not in title, don't mention them)
+5. If content doesn't match title → respond: {"text": "SKIP", "sentiment": "Neutral"}
 
-SENTIMENT ANALYSIS:
-Determine the market context/sentiment from this news:
-- Strong negative: Major hacks, crashes, regulatory crackdowns, bankruptcies
-- Moderate negative: Price drops, negative predictions, concerns, warnings
-- Slight negative: Minor setbacks, caution, uncertainty
-- Neutral: Announcements, statistics, routine updates
-- Slight positive: Small gains, minor good news, potential opportunities
-- Moderate positive: Significant gains, good predictions, partnerships, adoptions
-- Strong positive: Major breakthroughs, massive gains, revolutionary developments
+SENTIMENT (pick one):
+- Strong negative: Major hacks, crashes, bankruptcies
+- Moderate negative: Price drops, warnings, concerns
+- Slight negative: Minor setbacks, uncertainty
+- Neutral: Announcements, routine updates
+- Slight positive: Small gains, opportunities
+- Moderate positive: Significant gains, partnerships
+- Strong positive: Major breakthroughs, massive gains
 
-OUTPUT FORMAT (JSON):
+OUTPUT (JSON only):
 {
-  "text": "Your brief analysis here (max 280 chars)",
+  "text": "Your analysis (max 280 chars, about TITLE topic only)",
   "sentiment": "Moderate negative"
-}
-
-Example:
-{
-  "text": "Arthur Hayes, Tom Lee, and Michael Saylor's 2025 Bitcoin predictions fell short. Hayes forecasted $200K+, Lee predicted $250K, while Saylor expected $150K by year-end.",
-  "sentiment": "Moderate negative"
-}
-
-If you cannot create original brief text - respond with: {"text": "SKIP", "sentiment": "Neutral"}"""
+}"""
                     },
                     {
                         "role": "user",
@@ -235,7 +238,8 @@ If you cannot create original brief text - respond with: {"text": "SKIP", "senti
                 sentiment = data.get('sentiment', 'Neutral').strip()
                 
                 if text == "SKIP" or len(text) < 20:
-                    logger.warning("AI refused or result too short")
+                    logger.warning(f"AI refused or result too short (text='{text[:50] if text else 'empty'}', len={len(text)})")
+                    logger.warning(f"This likely means content doesn't match title: {feed_title[:80]}")
                     return None
                 
                 # Ensure it's not too long
@@ -380,6 +384,8 @@ def main():
                 continue
             
             # Process FULL content with AI
+            logger.info(f"=== TITLE ===")
+            logger.info(feed['title'])
             logger.info(f"=== CONTENT FOR AI (first 500 chars) ===")
             logger.info(feed['content'][:500])
             logger.info(f"=== END CONTENT (total {len(feed['content'])} chars) ===")
@@ -387,7 +393,7 @@ def main():
             ai_analysis = process_with_ai(feed['content'], feed['title'])
             
             if not ai_analysis:
-                logger.warning("AI processing failed")
+                logger.warning(f"AI processing failed for feed {feed_id_str}, will retry next run")
                 max_processed_id_int = max(max_processed_id_int, feed['id'])
                 continue
             
