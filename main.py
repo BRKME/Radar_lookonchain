@@ -185,16 +185,38 @@ def process_with_ai(content, feed_title):
                 messages=[
                     {
                         "role": "system",
-                        "content": """You are a crypto analyst. Create a BRIEF Telegram post with sentiment analysis.
+                        "content": """You are an editor for a professional crypto news channel (Bloomberg/The Block style). Your task is to create concise, scannable news posts with light emoji and hashtag usage.
 
-CRITICAL RULES:
-1. Write ONLY about the article TITLE topic
-2. Maximum 280 characters
-3. 2-3 sentences with key numbers/tickers
-4. IGNORE any unrelated content (if Bitcoin/Ethereum not in title, don't mention them)
-5. If content doesn't match title → respond: {"text": "SKIP", "sentiment": "Neutral"}
+FORMATTING RULES:
+1. Start with exactly 1 emoji based on content:
+   - 📰 general news/announcements
+   - 📊 data/metrics/statistics
+   - ⚠️ risks/warnings/negative events
+   - 🚀 positive developments/growth
+   - 🧠 analysis/insights (only with real conclusions)
 
-SENTIMENT (pick one):
+2. Headline: Brief, neutral, informational (no clickbait)
+
+3. Body: 1-2 sentences, dry facts
+
+4. Total post length: Maximum 500 characters (including emoji, headline, body, context, hashtags)
+
+5. Context: Must include sentiment assessment
+
+6. Hashtags:
+   - Place ONLY at the end
+   - 3-5 maximum
+   - Use ONLY functional tags: #BTC #ETH #Altcoins #DeFi #Markets #Macro #Stablecoins
+   - Match tags to article content (e.g., if Bitcoin mentioned → #BTC)
+
+FORBIDDEN:
+- More than 1 emoji
+- CAPS LOCK
+- Words like "URGENT", "SHOCK", "ROCKET", "100x"
+- Emotional opinions or trading advice
+- Excessive exclamation marks
+
+SENTIMENT:
 - Strong negative: Major hacks, crashes, bankruptcies
 - Moderate negative: Price drops, warnings, concerns
 - Slight negative: Minor setbacks, uncertainty
@@ -203,11 +225,19 @@ SENTIMENT (pick one):
 - Moderate positive: Significant gains, partnerships
 - Strong positive: Major breakthroughs, massive gains
 
-OUTPUT (JSON only):
+OUTPUT FORMAT (JSON):
 {
-  "text": "Your analysis (max 280 chars, about TITLE topic only)",
-  "sentiment": "Moderate negative"
-}"""
+  "text": "[emoji] [Headline]\n\n[Body text]\n\nContext: [sentiment]\n\n[hashtags]",
+  "sentiment": "[sentiment value]"
+}
+
+EXAMPLE:
+{
+  "text": "📊 BTC ETF Records $2.1B Weekly Inflows\n\nUS Bitcoin spot ETFs saw strongest week since launch with institutional buying driving momentum. Total AUM now exceeds $50B.\n\nContext: Moderate positive\n\n#BTC #Markets",
+  "sentiment": "Moderate positive"
+}
+
+CRITICAL: Write ONLY about the article TITLE topic. If content doesn't match title → {"text": "SKIP", "sentiment": "Neutral"}"""
                     },
                     {
                         "role": "user",
@@ -242,10 +272,10 @@ OUTPUT (JSON only):
                     logger.warning(f"This likely means content doesn't match title: {feed_title[:80]}")
                     return None
                 
-                # Ensure it's not too long
-                if len(text) > 400:
+                # Ensure it's not too long (500 chars total post limit)
+                if len(text) > 500:
                     logger.warning(f"AI output too long ({len(text)} chars), truncating")
-                    text = text[:397] + "..."
+                    text = text[:497] + "..."
                 
                 logger.info(f"AI output length: {len(text)} chars, sentiment: {sentiment}")
                 return {'text': text, 'sentiment': sentiment}
@@ -261,7 +291,7 @@ OUTPUT (JSON only):
     
     return None
 
-def send_to_telegram(analysis_data, feed_title=None, is_error=False):
+def send_to_telegram(analysis_data, is_error=False):
     """Send message to Telegram"""
     base_url = f"https://api.telegram.org/bot{BOT_TOKEN}"
     chat_id = ADMIN_CHAT_ID if is_error else TARGET_CHAT_ID
@@ -269,38 +299,16 @@ def send_to_telegram(analysis_data, feed_title=None, is_error=False):
     if is_error:
         message = analysis_data  # For errors, data is just text
     else:
-        # For normal posts, data is dict with text and sentiment
+        # AI now generates complete formatted message with emoji, title, context, hashtags
         text = analysis_data.get('text', '')
-        sentiment = analysis_data.get('sentiment', 'Neutral')
         
-        # Truncate title if too long (preserve sentiment)
-        max_title_len = 200
-        if feed_title and len(feed_title) > max_title_len:
-            feed_title = feed_title[:max_title_len] + "..."
+        # Use AI-generated text as-is (already includes everything)
+        message = text
         
-        # Format with title if provided
-        if feed_title:
-            message = f"📰 {feed_title}\n\n{text}\n\nContext: {sentiment}"
-        else:
-            message = f"{text}\n\nContext: {sentiment}"
-        
-        # Smart truncation - preserve sentiment at the end
+        # Ensure within Telegram limit
         if len(message) > 4096:
-            # Calculate space for text
-            footer = f"\n\nContext: {sentiment}"
-            header = f"📰 {feed_title}\n\n" if feed_title else ""
-            max_text_len = 4096 - len(header) - len(footer) - 3  # -3 for "..."
-            
-            if max_text_len > 100:  # Ensure reasonable text length
-                text = text[:max_text_len] + "..."
-                message = f"{header}{text}{footer}"
-            else:
-                # If title too long, truncate it more aggressively
-                feed_title = feed_title[:100] + "..." if feed_title else ""
-                header = f"📰 {feed_title}\n\n" if feed_title else ""
-                max_text_len = 4096 - len(header) - len(footer) - 3
-                text = text[:max_text_len] + "..."
-                message = f"{header}{text}{footer}"
+            logger.warning(f"Message too long ({len(message)} chars), truncating")
+            message = message[:4093] + "..."
     
     # Final safety check
     if len(message) > 4096:
@@ -404,8 +412,8 @@ def main():
             processed_hashes.add(feed_id_str)
             max_processed_id_int = max(max_processed_id_int, feed['id'])
             
-            # Send to Telegram with original title
-            success = send_to_telegram(ai_analysis, feed_title=feed['title'])
+            # Send to Telegram (AI already formatted complete message)
+            success = send_to_telegram(ai_analysis)
             
             if success:
                 published_count += 1
