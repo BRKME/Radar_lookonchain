@@ -23,9 +23,9 @@ TARGET_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', TARGET_CHAT_ID)
 
 # Settings
-MAX_FEEDS_PER_RUN = 3  # Reduced for 30-min intervals
+MAX_FEEDS_PER_RUN = 3
 OPENAI_TIMEOUT = 15
-POST_DELAY = 2  # Reduced delay between posts
+POST_DELAY = 2
 
 # Validate environment variables
 required_vars = {
@@ -72,7 +72,7 @@ def fetch_new_feeds(last_id):
     """Find new feeds by trying incremental IDs"""
     new_feeds = []
     current_id = last_id + 1
-    max_new_feeds = 5  # Reduced for 30-min intervals
+    max_new_feeds = 5
     
     while len(new_feeds) < max_new_feeds:
         feed_url = f"https://www.lookonchain.com/feeds/{current_id}"
@@ -84,7 +84,6 @@ def fetch_new_feeds(last_id):
             
             response = requests.get(feed_url, headers=headers, timeout=30, allow_redirects=False)
             
-            # If 404 - no more feeds, stop immediately
             if response.status_code == 404:
                 logger.info(f"Feed {current_id}: 404 - reached end")
                 break
@@ -93,48 +92,41 @@ def fetch_new_feeds(last_id):
                 logger.warning(f"Feed {current_id}: status {response.status_code}, stopping")
                 break
             
-            # Parse the page
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Find title
             title_elem = soup.find('h1')
             if not title_elem:
                 logger.warning(f"Feed {current_id}: no title found, will retry next run")
-                break  # Stop here to retry this ID next run
+                break
             
             title = html.unescape(title_elem.get_text(strip=True))
             
-            # Find time
             time_elem = soup.find('time') or soup.find(string=lambda text: text and 'ago' in text)
             time_text = time_elem if isinstance(time_elem, str) else (time_elem.get_text(strip=True) if time_elem else "")
             
-            # Proven working parser: collect ALL paragraphs, then filter with stop markers
+            # PROVEN WORKING PARSER
             all_paragraphs = []
             for p in soup.find_all('p'):
                 text = p.get_text(strip=True)
-                if text and len(text) > 30:  # Skip very short paragraphs
+                if text and len(text) > 30:
                     all_paragraphs.append(html.unescape(text))
             
             if not all_paragraphs:
                 logger.warning(f"Feed {current_id}: no paragraphs found, will retry")
                 break
             
-            # Filter with stop markers for "Relevant content" section
             content_paragraphs = []
             stop_markers = ['relevant content', 'source:', 'add to favorites', 'download image', 'share x']
             
             for para in all_paragraphs:
                 para_lower = para.lower()
                 
-                # Stop if we hit a marker
                 if any(marker in para_lower for marker in stop_markers):
                     logger.info(f"Found stop marker: {para[:50]}...")
                     break
                 
-                # Collect paragraph
                 content_paragraphs.append(para)
                 
-                # Stop after 5 paragraphs (enough for main article)
                 if len(content_paragraphs) >= 5:
                     break
             
@@ -147,9 +139,8 @@ def fetch_new_feeds(last_id):
             
             if not full_content or len(full_content) < 50:
                 logger.warning(f"Feed {current_id}: content too short, will retry next run")
-                break  # Stop here to retry this ID next run
+                break
             
-            # Success!
             new_feeds.append({
                 'id': current_id,
                 'title': title,
@@ -165,14 +156,13 @@ def fetch_new_feeds(last_id):
             break
         
         current_id += 1
-        time.sleep(0.5)  # Small delay between requests
+        time.sleep(0.5)
     
     logger.info(f"Found {len(new_feeds)} new feeds")
     return new_feeds
 
 def process_with_ai(content, feed_title):
-    """Process content through OpenAI - analyze for Telegram format with sentiment"""
-    # Truncate if too long (but we should have clean content now)
+    """Process content through OpenAI"""
     if len(content) > 2000:
         content = content[:2000]
         logger.warning(f"Content truncated to 2000 chars")
@@ -184,41 +174,16 @@ def process_with_ai(content, feed_title):
                 messages=[
                     {
                         "role": "system",
-                        "content": """You are an editor for a professional crypto news channel (Bloomberg/The Block style). Your task is to create concise, scannable news posts with light emoji and hashtag usage.
+                        "content": """You are a crypto analyst. Create a BRIEF Telegram post with sentiment analysis.
 
-FORMATTING RULES:
-1. Start with exactly 1 emoji based on content:
-   - 📰 general news/announcements
-   - 📊 data/metrics/statistics
-   - ⚠️ risks/warnings/negative events
-   - 🚀 positive developments/growth
-   - 🧠 analysis/insights (only with real conclusions)
+CRITICAL RULES:
+1. Write ONLY about the article TITLE topic
+2. Maximum 280 characters
+3. 2-3 sentences with key numbers/tickers
+4. IGNORE any unrelated content (if Bitcoin/Ethereum not in title, don't mention them)
+5. If content doesn't match title → respond: {"text": "SKIP", "sentiment": "Neutral"}
 
-2. Headline: Brief, neutral, informational (no clickbait)
-
-3. Body: 1-2 sentences, dry facts
-
-4. Total post length: Maximum 500 characters (including emoji, headline, body, context, hashtags)
-
-5. Context: Must include sentiment assessment
-
-6. Hashtags:
-   - Place ONLY at the end
-   - 3-5 maximum
-   - Use ONLY functional tags: #BTC #ETH #Altcoins #DeFi #Markets #Macro #Stablecoins
-   - Match tags to article content (e.g., if Bitcoin mentioned → #BTC)
-
-7. NO NEWLINES in JSON values - use spaces instead
-
-FORBIDDEN:
-- More than 1 emoji
-- CAPS LOCK
-- Words like "URGENT", "SHOCK", "ROCKET", "100x"
-- Emotional opinions or trading advice
-- Excessive exclamation marks
-- Newlines (\n) inside JSON string values
-
-SENTIMENT:
+SENTIMENT (pick one):
 - Strong negative: Major hacks, crashes, bankruptcies
 - Moderate negative: Price drops, warnings, concerns
 - Slight negative: Minor setbacks, uncertainty
@@ -227,19 +192,11 @@ SENTIMENT:
 - Moderate positive: Significant gains, partnerships
 - Strong positive: Major breakthroughs, massive gains
 
-OUTPUT FORMAT (JSON, single line):
+OUTPUT (JSON only):
 {
-  "text": "[emoji] [Headline] - [Body text] Context: [sentiment] [hashtags]",
-  "sentiment": "[sentiment value]"
-}
-
-EXAMPLE:
-{
-  "text": "📊 BTC ETF Records $2.1B Weekly Inflows - US Bitcoin spot ETFs saw strongest week since launch with institutional buying driving momentum. Total AUM now exceeds $50B. Context: Moderate positive #BTC #Markets",
-  "sentiment": "Moderate positive"
-}
-
-CRITICAL: Write ONLY about the article TITLE topic. If content doesn't match title → {"text": "SKIP", "sentiment": "Neutral"}"""
+  "text": "Your analysis (max 280 chars, about TITLE topic only)",
+  "sentiment": "Moderate negative"
+}"""
                     },
                     {
                         "role": "user",
@@ -247,15 +204,13 @@ CRITICAL: Write ONLY about the article TITLE topic. If content doesn't match tit
                     }
                 ],
                 max_tokens=200,
-                temperature=0.9,  # Increased for more variety
+                temperature=0.9,
                 timeout=OPENAI_TIMEOUT
             )
             
             result = response.choices[0].message.content.strip()
             
-            # Parse JSON response
             try:
-                # Remove markdown code blocks if present
                 if result.startswith('```'):
                     parts = result.split('```')
                     if len(parts) >= 2:
@@ -264,35 +219,18 @@ CRITICAL: Write ONLY about the article TITLE topic. If content doesn't match tit
                             result = result[4:]
                         result = result.strip()
                 
-                # Fix: Replace control characters that break JSON parsing
-                result = result.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
-                
                 data = json.loads(result)
                 
                 text = data.get('text', '').strip()
                 sentiment = data.get('sentiment', 'Neutral').strip()
                 
                 if text == "SKIP" or len(text) < 20:
-                    logger.warning(f"AI refused or result too short (text='{text[:50] if text else 'empty'}', len={len(text)})")
-                    logger.warning(f"This likely means content doesn't match title: {feed_title[:80]}")
+                    logger.warning(f"AI refused or result too short")
                     return None
                 
-                # Add newlines for readability if missing
-                # Format should be: "[content] Context: [sentiment] [hashtags]"
-                # Add newlines before "Context:" and before hashtags
-                if 'Context:' in text and '\n' not in text:
-                    text = text.replace(' Context:', '\n\nContext:')
-                    # Add newline before first hashtag if present
-                    if ' #' in text:
-                        # Find first hashtag
-                        hashtag_pos = text.find(' #')
-                        if hashtag_pos > 0:
-                            text = text[:hashtag_pos] + '\n\n' + text[hashtag_pos:].strip()
-                
-                # Ensure it's not too long (500 chars total post limit)
-                if len(text) > 500:
+                if len(text) > 400:
                     logger.warning(f"AI output too long ({len(text)} chars), truncating")
-                    text = text[:497] + "..."
+                    text = text[:397] + "..."
                 
                 logger.info(f"AI output length: {len(text)} chars, sentiment: {sentiment}")
                 return {'text': text, 'sentiment': sentiment}
@@ -308,26 +246,80 @@ CRITICAL: Write ONLY about the article TITLE topic. If content doesn't match tit
     
     return None
 
-def send_to_telegram(analysis_data, is_error=False):
+def get_emoji_for_sentiment(sentiment):
+    """Get emoji based on sentiment"""
+    sentiment_lower = sentiment.lower()
+    
+    if 'strong negative' in sentiment_lower:
+        return '⚠️'
+    elif 'negative' in sentiment_lower:
+        return '📊'
+    elif 'strong positive' in sentiment_lower:
+        return '🚀'
+    elif 'positive' in sentiment_lower:
+        return '📰'
+    else:
+        return '📰'
+
+def get_hashtags_from_title(title):
+    """Extract hashtags from title"""
+    title_lower = title.lower()
+    hashtags = []
+    
+    if 'bitcoin' in title_lower or 'btc' in title_lower:
+        hashtags.append('#BTC')
+    if 'ethereum' in title_lower or 'eth' in title_lower:
+        hashtags.append('#ETH')
+    if any(alt in title_lower for alt in ['solana', 'sol', 'altcoin', 'token']):
+        hashtags.append('#Altcoins')
+    if any(defi in title_lower for defi in ['defi', 'staking', 'liquidity']):
+        hashtags.append('#DeFi')
+    if any(market in title_lower for market in ['market', 'trading', 'price', 'etf']):
+        hashtags.append('#Markets')
+    
+    if not hashtags:
+        hashtags.append('#Markets')
+    
+    return ' '.join(hashtags[:3])
+
+def send_to_telegram(analysis_data, feed_title=None, is_error=False):
     """Send message to Telegram"""
     base_url = f"https://api.telegram.org/bot{BOT_TOKEN}"
     chat_id = ADMIN_CHAT_ID if is_error else TARGET_CHAT_ID
     
     if is_error:
-        message = analysis_data  # For errors, data is just text
+        message = analysis_data
     else:
-        # AI now generates complete formatted message with emoji, title, context, hashtags
         text = analysis_data.get('text', '')
+        sentiment = analysis_data.get('sentiment', 'Neutral')
         
-        # Use AI-generated text as-is (already includes everything)
-        message = text
+        emoji = get_emoji_for_sentiment(sentiment)
+        hashtags = get_hashtags_from_title(feed_title) if feed_title else ''
         
-        # Ensure within Telegram limit
+        max_title_len = 200
+        if feed_title and len(feed_title) > max_title_len:
+            feed_title = feed_title[:max_title_len] + "..."
+        
+        if feed_title:
+            message = f"{emoji} {feed_title}\n\n{text}\n\nContext: {sentiment}\n\n{hashtags}"
+        else:
+            message = f"{emoji} {text}\n\nContext: {sentiment}\n\n{hashtags}"
+        
         if len(message) > 4096:
-            logger.warning(f"Message too long ({len(message)} chars), truncating")
-            message = message[:4093] + "..."
+            footer = f"\n\nContext: {sentiment}\n\n{hashtags}"
+            header = f"{emoji} {feed_title}\n\n" if feed_title else f"{emoji} "
+            max_text_len = 4096 - len(header) - len(footer) - 3
+            
+            if max_text_len > 100:
+                text = text[:max_text_len] + "..."
+                message = f"{header}{text}{footer}"
+            else:
+                feed_title = feed_title[:100] + "..." if feed_title else ""
+                header = f"{emoji} {feed_title}\n\n" if feed_title else f"{emoji} "
+                max_text_len = 4096 - len(header) - len(footer) - 3
+                text = text[:max_text_len] + "..."
+                message = f"{header}{text}{footer}"
     
-    # Final safety check
     if len(message) > 4096:
         message = message[:4090] + "..."
     
@@ -363,7 +355,6 @@ def main():
     logger.info("Starting Lookonchain Feed Scraper Bot...")
     
     try:
-        # Get last processed ID
         last_id_str = get_last_processed_id()
         try:
             last_id_int = int(last_id_str) if last_id_str else 0
@@ -372,23 +363,19 @@ def main():
             last_id_int = 0
         logger.info(f"Last processed ID: {last_id_int}")
         
-        # FIRST RUN PROTECTION
         if last_id_int == 0:
-            # Try to find a recent feed to start from
-            test_id = 42194  # Recent known ID
+            test_id = 42194
             logger.info(f"First run: testing with ID {test_id}")
             save_last_processed_id(str(test_id))
             logger.warning(f"First run: saved starting ID ({test_id}), no publishing")
             return
         
-        # Find new feeds
         new_feeds = fetch_new_feeds(last_id_int)
         
         if not new_feeds:
             logger.info("No new feeds found")
             return
         
-        # Get processed hashes for deduplication
         processed_hashes = get_processed_hashes()
         logger.info(f"Loaded {len(processed_hashes)} processed hashes")
         
@@ -401,14 +388,12 @@ def main():
             logger.info(f"Time: {feed['time']}")
             logger.info(f"Content length: {len(feed['content'])} chars")
             
-            # Deduplication by feed ID (not title!)
             feed_id_str = str(feed['id'])
             if feed_id_str in processed_hashes:
                 logger.info("Feed already processed, skipping")
                 max_processed_id_int = max(max_processed_id_int, feed['id'])
                 continue
             
-            # Process FULL content with AI
             logger.info(f"=== TITLE ===")
             logger.info(feed['title'])
             logger.info(f"=== CONTENT FOR AI (first 500 chars) ===")
@@ -424,27 +409,21 @@ def main():
             
             logger.info(f"AI analysis: {ai_analysis.get('text', '')[:100]}... | Sentiment: {ai_analysis.get('sentiment', 'N/A')}")
             
-            # CRITICAL: Save feed ID BEFORE sending to prevent duplicates if Telegram fails
             save_processed_hash(feed_id_str)
             processed_hashes.add(feed_id_str)
             max_processed_id_int = max(max_processed_id_int, feed['id'])
             
-            # Send to Telegram (AI already formatted complete message)
-            success = send_to_telegram(ai_analysis)
+            success = send_to_telegram(ai_analysis, feed_title=feed['title'])
             
             if success:
                 published_count += 1
                 logger.info(f"✅ Published ({published_count})")
             else:
-                logger.error("Failed to publish to Telegram (feed marked as processed to avoid retry loop)")
-                # Continue to next feed instead of breaking
-                # Feed is already in processed_hashes so won't be retried
+                logger.error("Failed to publish to Telegram (feed marked as processed)")
             
-            # Delay between posts
             if i < min(len(new_feeds), MAX_FEEDS_PER_RUN) - 1:
                 time.sleep(POST_DELAY)
         
-        # Save final ID
         if max_processed_id_int > last_id_int:
             save_last_processed_id(str(max_processed_id_int))
         
