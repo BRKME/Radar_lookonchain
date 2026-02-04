@@ -9,25 +9,21 @@ import requests
 from bs4 import BeautifulSoup
 from openai import OpenAI
 
-# Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Configuration
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TARGET_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', TARGET_CHAT_ID)
 
-# Settings
-MAX_FEEDS_PER_RUN = 12  # Increased: 12 × 48 runs = 576 feeds/day (5x margin over 115/day rate)
+MAX_FEEDS_PER_RUN = 12
 OPENAI_TIMEOUT = 15
-POST_DELAY = 2  # Safe for Telegram limits
+POST_DELAY = 2
 
-# Validate environment variables
 required_vars = {
     'OPENAI_API_KEY': OPENAI_API_KEY,
     'TELEGRAM_BOT_TOKEN': BOT_TOKEN,
@@ -42,7 +38,6 @@ for var_name, var_value in required_vars.items():
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 def get_last_processed_id():
-    """Get last processed feed ID"""
     try:
         with open('last_feed_id.txt', 'r') as f:
             return f.read().strip()
@@ -50,13 +45,11 @@ def get_last_processed_id():
         return ""
 
 def save_last_processed_id(feed_id):
-    """Save last processed feed ID"""
     with open('last_feed_id.txt', 'w') as f:
         f.write(feed_id)
     logger.info(f"Saved last processed ID: {feed_id}")
 
 def get_processed_hashes():
-    """Get hashes of processed content"""
     try:
         with open('processed_hashes.txt', 'r') as f:
             return set(line.strip() for line in f if line.strip())
@@ -64,12 +57,10 @@ def get_processed_hashes():
         return set()
 
 def save_processed_hash(content_hash):
-    """Save hash of processed content"""
     with open('processed_hashes.txt', 'a') as f:
         f.write(f"{content_hash}\n")
 
 def fetch_new_feeds(last_id):
-    """Find new feeds by trying incremental IDs"""
     new_feeds = []
     current_id = last_id + 1
     max_new_feeds = 15
@@ -194,7 +185,6 @@ def fetch_new_feeds(last_id):
     return new_feeds
 
 def process_with_ai(content, feed_title):
-    """Process content through OpenAI"""
     if len(content) > 2000:
         content = content[:2000]
         logger.warning(f"Content truncated to 2000 chars")
@@ -215,60 +205,59 @@ CRITICAL RULES:
 4. IGNORE any unrelated content (if Bitcoin/Ethereum not in title, don't mention them)
 5. If content doesn't match title → respond: {"text": "SKIP", "sentiment": "Neutral"}
 
-SENTIMENT CRITERIA:
+SENTIMENT GUIDELINES (Crypto-specific):
 
-Strong negative:
-- Hacks/exploits with losses >$5M
-- Exchange shutdowns/bankruptcies
-- Liquidations >$100M
-- Price crashes >20% in 24h
+PRICE MOVEMENTS (24h):
+- Strong negative: >5% drop OR critical level break (BTC <$75K, ETH <$2200, SOL <$120)
+- Moderate negative: 3-5% drop OR approaching key support
+- Slight negative: 1-3% drop OR minor concerns
+- Neutral: <1% change OR routine announcements
+- Slight positive: 1-3% gain OR minor good news
+- Moderate positive: 3-5% gain OR partnerships
+- Strong positive: >5% gain OR major breakthroughs
 
-Moderate negative:
-- SHORT positions (bearish market view)
-- Losses $1M-$5M or unrealized losses
-- Selling pressure, negative premiums
-- Low win rates (<20%) even with gains
-- Price drops 10-20%
-- Transfer to exchanges (potential sell signals)
-- Uncertainty language: "concerns", "looms", "or signals"
-- Warnings/cautions even with positive metrics
+UNREALIZED LOSSES:
+- Strong negative: >$1B unrealized loss OR >50% loss on position
+- Moderate negative: $100M-$1B unrealized loss OR 30-50% loss
+- Slight negative: <$100M unrealized loss OR <30% loss
 
-Slight negative:
-- Minor risks/delays mentioned
-- Progress on solving problems (implies problem exists)
-- Bottlenecks in positive growth
-- Mixed signals
+WHALE ACTIVITY:
+- Strong negative: Major liquidations (>100), panic selling, >$1B moves with losses
+- Moderate negative: Large CEX outflows, selling pressure, loan repayments
+- Slight negative: Profit taking, small position reduction
+- Neutral: Routine transfers, rebalancing without losses
+- Slight positive: Small accumulation, DCA buying
+- Moderate positive: Whale accumulation, institutional buying
+- Strong positive: Massive buying, supply squeeze
 
-Neutral:
-- Strategic pivots without immediate impact
-- Routine announcements
-- Balanced updates
+STABLECOIN ACTIVITY:
+- Neutral to Slight positive: Large USDT/USDC mints (indicates incoming liquidity)
+- Slight negative: Large redemptions (liquidity leaving)
 
-Slight positive:
-- Small gains <10%
-- Opportunities mentioned
-- Positive developments with caveats
+SECTOR-WIDE EVENTS:
+- Strong negative: Mining stocks/multiple coins down >10%, sector crash
+- Moderate negative: Sector down 5-10%
+- Slight negative: Sector down <5%
 
-Moderate positive:
-- Gains 10-50% with sustainability
-- ATH with strong fundamentals
-- Institutional adoption
-- Major partnerships
-- Reduce if warnings/delays present
+TRADITIONAL MARKETS (Gold, Stocks):
+- Use HALF the thresholds (e.g., -2% gold = Slight negative, not Moderate)
 
-Strong positive:
-- Gains >50% with solid backing
-- Major protocol upgrades
-- Regulatory wins
-- Market leadership shifts
+HACKS/EXPLOITS:
+- Always "Strong negative" regardless of amount
 
-BALANCE RULE:
-Overall context > single metric. Example: +$739k gain BUT 14.55% win rate + $598k total loss = Moderate negative
+SENTIMENT (pick one):
+- Strong negative: Drops >5%, hacks, bankruptcies, >$1B losses, critical breaks, 262 liquidations, sector crash
+- Moderate negative: Drops 3-5%, large outflows, warnings, $100M-$1B losses
+- Slight negative: Drops 1-3%, minor setbacks, <$100M losses
+- Neutral: <1% moves, announcements, routine updates, stablecoin mints
+- Slight positive: Gains 1-3%, small opportunities, liquidity inflows
+- Moderate positive: Gains 3-5%, partnerships, institutional interest
+- Strong positive: Gains >5%, massive breakthroughs, supply shock
 
 OUTPUT (JSON only):
 {
   "text": "Your analysis (max 280 chars, about TITLE topic only)",
-  "sentiment": "Moderate negative"
+  "sentiment": "Strong negative"
 }"""
                     },
                     {
@@ -320,7 +309,6 @@ OUTPUT (JSON only):
     return None
 
 def get_emoji_for_sentiment(sentiment):
-    """Get emoji based on sentiment"""
     sentiment_lower = sentiment.lower()
     
     if 'strong negative' in sentiment_lower:
@@ -335,7 +323,6 @@ def get_emoji_for_sentiment(sentiment):
         return '📰'
 
 def get_hashtags_from_title(title):
-    """Extract hashtags from title"""
     title_lower = title.lower()
     hashtags = []
     
@@ -380,7 +367,6 @@ def get_hashtags_from_title(title):
     return ' '.join(hashtags[:3])
 
 def send_to_telegram(analysis_data, feed_title=None, is_error=False):
-    """Send message to Telegram"""
     base_url = f"https://api.telegram.org/bot{BOT_TOKEN}"
     chat_id = ADMIN_CHAT_ID if is_error else TARGET_CHAT_ID
     
@@ -440,7 +426,6 @@ def send_to_telegram(analysis_data, feed_title=None, is_error=False):
     return False
 
 def notify_error(error_msg):
-    """Send error notification"""
     try:
         message = f"🚨 BOT ERROR\n\n{error_msg}"
         send_to_telegram(message, is_error=True)
@@ -448,7 +433,6 @@ def notify_error(error_msg):
         logger.error(f"Failed to send error notification: {e}")
 
 def main():
-    """Main logic"""
     logger.info("Starting Lookonchain Feed Scraper Bot...")
     
     try:
@@ -488,6 +472,13 @@ def main():
             feed_id_str = str(feed['id'])
             if feed_id_str in processed_hashes:
                 logger.info("Feed already processed, skipping")
+                max_processed_id_int = max(max_processed_id_int, feed['id'])
+                continue
+            
+            if 'meme coin' in feed['title'].lower():
+                logger.info(f"⊘ Skipping meme coin news: {feed['title'][:80]}...")
+                save_processed_hash(feed_id_str)
+                processed_hashes.add(feed_id_str)
                 max_processed_id_int = max(max_processed_id_int, feed['id'])
                 continue
             
