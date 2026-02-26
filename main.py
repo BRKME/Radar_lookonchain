@@ -417,12 +417,23 @@ def send_to_telegram(analysis_data, feed_title=None, is_error=False):
     if len(message) > 4096:
         message = message[:4090] + "..."
     
+    # Inline keyboard с кнопкой Subscribe
+    inline_keyboard = {
+        "inline_keyboard": [[
+            {
+                "text": "⭐ Subscribe",
+                "url": "https://t.me/frogfriends"
+            }
+        ]]
+    }
+    
     for attempt in range(3):
         try:
             data = {
                 'chat_id': chat_id,
                 'text': message,
-                'disable_web_page_preview': False
+                'disable_web_page_preview': False,
+                'reply_markup': json.dumps(inline_keyboard)
             }
             resp = requests.post(f"{base_url}/sendMessage", data=data, timeout=30)
             if resp.status_code == 200:
@@ -500,13 +511,24 @@ def main():
             combined_lower = combined_text.lower()
             
             noise_keywords = [
+                # Существующие
                 'whale trader',
                 'a whale',
-                'the whale',       # Добавлено!
+                'the whale',
                 'on-chain whale',
                 'ultimate shorter',
                 'antminer',
-                '「',              # Специальный символ
+                '「',
+                # Новые фильтры (по запросу)
+                'a trader',
+                'a new wallet',
+                'a certain whale',
+                'short seller',
+                'binance wallet launches',
+                'contract whale',
+                'newly created address',
+                'a certain contract',
+                # whales как отдельное слово проверяется ниже
             ]
             
             # Проверяем ключевые слова (case-insensitive)
@@ -515,12 +537,22 @@ def main():
             # Также проверяем символ 「 отдельно (он не в lower)
             has_special_char = '「' in combined_text
             
-            # Проверяем "whale" как отдельное слово в начале предложения
+            # Проверяем "whale", "whales", "trader" как отдельное слово в начале предложения
             words = combined_text.strip().split()
             first_word = words[0].lower() if words else ''
-            is_whale_start = first_word == 'whale'
+            noise_start_words = ['whale', 'whales', 'trader']
+            is_noise_start = first_word in noise_start_words
             
-            is_noise = has_noise_keyword or has_special_char or is_whale_start
+            # Проверяем "whales" в начале любого предложения контента
+            content_sentences = feed['content'].split('.') if feed['content'] else []
+            has_whales_sentence = False
+            for sentence in content_sentences[:3]:  # Проверяем первые 3 предложения
+                sentence_words = sentence.strip().split()
+                if sentence_words and sentence_words[0].lower() in ['whales', 'whale']:
+                    has_whales_sentence = True
+                    break
+            
+            is_noise = has_noise_keyword or has_special_char or is_noise_start or has_whales_sentence
             
             if is_noise:
                 logger.info(f"⊘ Skipping noise (whale/antminer): {feed['title'][:60]}...")
