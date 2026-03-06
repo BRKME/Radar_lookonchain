@@ -528,6 +528,21 @@ def main():
                 'contract whale',
                 'newly created address',
                 'a certain contract',
+                # Новые фильтры (06.03.26)
+                'new addresses',
+                'buddy',
+                "'buddy'",
+                'whale-linked',
+                'three-address',
+                'bearish whale',
+                'an address',
+                'short whales',
+                'short whale',
+                'withdrew',
+                'an whale',
+                'two bitcoin whales',
+                'cbb',
+                'og bitcoin wallet',
                 # whales как отдельное слово проверяется ниже
             ]
             
