@@ -24,6 +24,22 @@ MAX_FEEDS_PER_RUN = 12
 OPENAI_TIMEOUT = 15
 POST_DELAY = 2
 
+# Фразы для фильтрации (если в первом предложении - пропускаем)
+SKIP_PHRASES = [
+    "a certain eth whale",
+    "eth whale",
+    "a new address",
+    "a certain dormant",
+    "has accumulated",
+    "wti crude oil largest short",
+    "antalpha",
+    "two associated addresses",
+    "silver whale",
+    "long-short dual oil air force",
+    "ponzitrador",
+    "loracle",
+]
+
 required_vars = {
     'OPENAI_API_KEY': OPENAI_API_KEY,
     'TELEGRAM_BOT_TOKEN': BOT_TOKEN,
@@ -36,6 +52,23 @@ for var_name, var_value in required_vars.items():
         sys.exit(1)
 
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
+
+
+def should_skip_content(content: str) -> bool:
+    """Проверяет, нужно ли пропустить новость по фразам в первом предложении."""
+    if not content:
+        return False
+    
+    # Берём первое предложение (до первой точки, вопроса или переноса)
+    first_sentence = content.split('.')[0].split('?')[0].split('\n')[0].lower()
+    
+    for phrase in SKIP_PHRASES:
+        if phrase in first_sentence:
+            logger.info(f"⏭️ Skipping: found '{phrase}' in first sentence")
+            return True
+    
+    return False
+
 
 def get_last_processed_id():
     try:
@@ -158,6 +191,13 @@ def fetch_new_feeds(last_id):
                 continue
             
             consecutive_errors = 0
+            
+            # Проверяем фильтр по фразам
+            if should_skip_content(full_content):
+                logger.info(f"Feed {current_id}: filtered by skip phrases")
+                current_id += 1
+                time.sleep(0.3)
+                continue
             
             new_feeds.append({
                 'id': current_id,
