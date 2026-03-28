@@ -25,20 +25,35 @@ OPENAI_TIMEOUT = 15
 POST_DELAY = 2
 
 # Фразы для фильтрации (если в первом предложении - пропускаем)
-SKIP_PHRASES = [
-    "a certain eth whale",
-    "eth whale",
-    "a new address",
-    "a certain dormant",
-    "has accumulated",
-    "wti crude oil largest short",
-    "antalpha",
-    "two associated addresses",
-    "silver whale",
-    "long-short dual oil air force",
-    "ponzitrador",
-    "loracle",
-]
+def load_skip_phrases():
+    """Загружает фразы для пропуска из skip_phrases.txt"""
+    phrases = []
+    start_words = []
+    
+    try:
+        with open('skip_phrases.txt', 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                # Пропускаем пустые строки и комментарии
+                if not line or line.startswith('#'):
+                    continue
+                
+                # Специальный маркер для первых слов
+                if line.startswith('_START_'):
+                    start_words.append(line[7:].lower())
+                else:
+                    phrases.append(line.lower())
+        
+        logger.info(f"✅ Loaded {len(phrases)} skip phrases + {len(start_words)} start words")
+    except FileNotFoundError:
+        logger.warning("⚠️ skip_phrases.txt not found, using defaults")
+        phrases = ['whale', 'address', 'trader']
+        start_words = ['whale', 'whales', 'trader']
+    
+    return phrases, start_words
+
+# Загружаем фразы при старте
+SKIP_PHRASES, SKIP_START_WORDS = load_skip_phrases()
 
 required_vars = {
     'OPENAI_API_KEY': OPENAI_API_KEY,
@@ -54,20 +69,53 @@ for var_name, var_value in required_vars.items():
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 
-def should_skip_content(content: str) -> bool:
-    """Проверяет, нужно ли пропустить новость по фразам в первом предложении."""
-    if not content:
-        return False
+def should_skip_content(content: str, title: str = None) -> tuple:
+    """
+    Проверяет, нужно ли пропустить новость.
+    Возвращает (should_skip: bool, reason: str)
+    """
+    if not content and not title:
+        return False, None
     
-    # Берём первое предложение (до первой точки, вопроса или переноса)
-    first_sentence = content.split('.')[0].split('?')[0].split('\n')[0].lower()
+    # Берём первое предложение контента
+    first_sentence = ""
+    if content:
+        first_sentence = content.split('.')[0].split('?')[0].split('\n')[0]
     
+    # Комбинируем title + первое предложение
+    combined_text = ""
+    if title:
+        combined_text = title + " "
+    combined_text += first_sentence
+    combined_lower = combined_text.lower()
+    
+    # 1. Проверяем фразы
     for phrase in SKIP_PHRASES:
-        if phrase in first_sentence:
-            logger.info(f"⏭️ Skipping: found '{phrase}' in first sentence")
-            return True
+        if phrase in combined_lower:
+            return True, f"phrase '{phrase}'"
     
-    return False
+    # 2. Проверяем специальный символ
+    if '「' in combined_text:
+        return True, "special char '「'"
+    
+    # 3. Проверяем первое слово
+    words = combined_text.strip().split()
+    if words:
+        first_word = words[0].lower().strip('.,!?:')
+        if first_word in SKIP_START_WORDS:
+            return True, f"starts with '{first_word}'"
+    
+    # 4. Проверяем первое слово каждого из первых 3 предложений контента
+    if content:
+        sentences = content.split('.')[:3]
+        for sentence in sentences:
+            sentence_words = sentence.strip().split()
+            if sentence_words:
+                word = sentence_words[0].lower().strip('.,!?:')
+                if word in SKIP_START_WORDS:
+                    return True, f"sentence starts with '{word}'"
+    
+    return False, None
 
 
 def get_last_processed_id():
@@ -192,9 +240,10 @@ def fetch_new_feeds(last_id):
             
             consecutive_errors = 0
             
-            # Проверяем фильтр по фразам
-            if should_skip_content(full_content):
-                logger.info(f"Feed {current_id}: filtered by skip phrases")
+            # Проверяем фильтр по фразам (title + content)
+            skip, reason = should_skip_content(full_content, title)
+            if skip:
+                logger.info(f"⏭️ Feed {current_id}: filtered - {reason}")
                 current_id += 1
                 time.sleep(0.3)
                 continue
@@ -544,73 +593,10 @@ def main():
                 max_processed_id_int = max(max_processed_id_int, feed['id'])
                 continue
             
-            # Фильтр шума: проверяем И title И первое предложение content
-            title_text = feed['title'] if feed['title'] else ''
-            first_sentence = feed['content'].split('.')[0] if feed['content'] else ''
-            combined_text = title_text + ' ' + first_sentence
-            combined_lower = combined_text.lower()
-            
-            noise_keywords = [
-                # Существующие
-                'whale trader',
-                'a whale',
-                'the whale',
-                'on-chain whale',
-                'ultimate shorter',
-                'antminer',
-                '「',
-                # Новые фильтры (по запросу)
-                'a trader',
-                'a new wallet',
-                'a certain whale',
-                'short seller',
-                'binance wallet launches',
-                'contract whale',
-                'newly created address',
-                'a certain contract',
-                # Новые фильтры (06.03.26)
-                'new addresses',
-                'buddy',
-                "'buddy'",
-                'whale-linked',
-                'three-address',
-                'bearish whale',
-                'an address',
-                'short whales',
-                'short whale',
-                'withdrew',
-                'an whale',
-                'two bitcoin whales',
-                'cbb',
-                'og bitcoin wallet',
-                # whales как отдельное слово проверяется ниже
-            ]
-            
-            # Проверяем ключевые слова (case-insensitive)
-            has_noise_keyword = any(kw in combined_lower for kw in noise_keywords)
-            
-            # Также проверяем символ 「 отдельно (он не в lower)
-            has_special_char = '「' in combined_text
-            
-            # Проверяем "whale", "whales", "trader" как отдельное слово в начале предложения
-            words = combined_text.strip().split()
-            first_word = words[0].lower() if words else ''
-            noise_start_words = ['whale', 'whales', 'trader']
-            is_noise_start = first_word in noise_start_words
-            
-            # Проверяем "whales" в начале любого предложения контента
-            content_sentences = feed['content'].split('.') if feed['content'] else []
-            has_whales_sentence = False
-            for sentence in content_sentences[:3]:  # Проверяем первые 3 предложения
-                sentence_words = sentence.strip().split()
-                if sentence_words and sentence_words[0].lower() in ['whales', 'whale']:
-                    has_whales_sentence = True
-                    break
-            
-            is_noise = has_noise_keyword or has_special_char or is_noise_start or has_whales_sentence
-            
-            if is_noise:
-                logger.info(f"⊘ Skipping noise (whale/antminer): {feed['title'][:60]}...")
+            # Фильтр шума: используем единый should_skip_content
+            skip, reason = should_skip_content(feed['content'], feed['title'])
+            if skip:
+                logger.info(f"⊘ Skipping noise ({reason}): {feed['title'][:60]}...")
                 save_processed_hash(feed_id_str)
                 processed_hashes.add(feed_id_str)
                 max_processed_id_int = max(max_processed_id_int, feed['id'])

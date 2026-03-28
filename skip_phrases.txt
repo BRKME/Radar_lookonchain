@@ -1,0 +1,61 @@
+# Skip Phrases для Radar_lookonchain
+# Одна фраза на строку. Регистр не важен.
+# Строки с # игнорируются.
+# Фразы проверяются в title + первом предложении контента.
+
+# === WHALE фразы ===
+whale trader
+a whale
+the whale
+an whale
+eth whale
+a certain eth whale
+on-chain whale
+contract whale
+a certain whale
+bearish whale
+silver whale
+short whale
+short whales
+two bitcoin whales
+whale-linked
+
+# === ADDRESS фразы ===
+a new address
+an address
+newly created address
+new addresses
+three-address
+two associated addresses
+og bitcoin wallet
+a new wallet
+
+# === TRADER фразы ===
+a trader
+ultimate shorter
+short seller
+
+# === Специфичные имена/термины ===
+antminer
+antalpha
+ponzitrador
+loracle
+cbb
+buddy
+'buddy'
+
+# === Другие фильтры ===
+a certain dormant
+has accumulated
+wti crude oil largest short
+long-short dual oil air force
+binance wallet launches
+a certain contract
+withdrew
+
+# === Первые слова (проверяются отдельно) ===
+# Если предложение начинается с этих слов — пропускаем
+# (добавь _START_ перед словом)
+_START_whale
+_START_whales
+_START_trader
